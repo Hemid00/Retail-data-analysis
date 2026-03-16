@@ -146,7 +146,3 @@ Implement machine learning models for sales prediction
 Add more detailed geographic analysis
 
 Build interactive dashboards
-
-10,000,909 rows
-
-9 variables
