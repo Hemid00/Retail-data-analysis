@@ -1,0 +1,1122 @@
+---
+title: "Yekun Layihə"
+author: "Həmid Əliyev"
+date: "2026-02-15" 
+output: 
+   html_document:
+      toc: TRUE
+      toc_float: TRUE
+---
+
+```{r setup, include=TRUE,echo=FALSE,error=FALSE,warning=FALSE,message=FALSE}
+
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(plotly)
+library(scales)
+library(lubridate)
+library(readxl)
+library(readr)
+library("DT")
+library(stringr)
+library(tidyr)
+library(xlsx)
+library(plotly)
+library(janitor)
+library(stringi)
+readRenviron("C:/Users/Acer/OneDrive/Documents/.Renviron")
+
+
+
+load("C:/Yekun layihe/yekun.RData")
+
+az_map <- c("ə"="e","Ə"="E","ö"="o","Ö"="O","ü"="u","Ü"="U",
+            "ç"="c","Ç"="C","ş"="s","Ş"="S","ğ"="g","Ğ"="G",
+            "ı"="i","İ"="I")
+
+options(scipen = 999)
+
+
+```
+
+# Join
+
+```{r join,include=TRUE,echo=TRUE,error=FALSE,warning=FALSE,message=FALSE}
+
+make_key7 <- function(x) {
+  x <- as.character(x)
+  
+  
+  x <- enc2utf8(x)
+  x <- iconv(x, from = "", to = "UTF-8", sub = "")
+  
+
+  x <- toupper(x)
+  
+ 
+  x <- str_replace_all(x, az_map)
+  
+ 
+  x <- gsub("(?<=\\d)(ML|L|LT|LTR|G|GR|KG|KQ|QR|CM|SM|MM)\\b", " \\1", x, perl = TRUE)
+  
+  
+  unit_map <- c(
+    "KQ" = "KG",
+    "QR" = "GR",
+    "SM" = "CM",
+    "LT" = "L",
+    "LTR" = "L"
+  )
+  for (u in names(unit_map)) {
+    x <- gsub(paste0("\\b", u, "\\b"), unit_map[[u]], x, perl = TRUE)
+  }
+  
+  
+  x <- gsub("\\bPET\\b|\\bPLQ\\b", "", x, perl = TRUE)
+  
+  
+  x <- gsub("\\bVE\\b", "", x, perl = TRUE)
+  x <- gsub("\\b(DEMO|YTD|EDED|UCUN|CEKI|PAKET|QUTU)\\b", "", x, perl = TRUE)
+  
+ 
+  x <- gsub("\\b\\d{5,}\\b", "", x, perl = TRUE)
+  
+  
+  x <- gsub("[^\\p{L}\\p{N}]+", " ", x, perl = TRUE)
+  
+ 
+  x <- gsub("(?<=\\d)\\s+(?=\\d)", "", x, perl = TRUE)
+  
+ 
+  x <- gsub("\\s+", " ", x)
+  x <- trimws(x)
+  
+ 
+  x[is.na(x) | x == ""] <- "BILINMEYEN MEHSUL"
+  
+  
+  x
+}
+
+
+
+fp_map_agg <- fp_map[!is.na(product_key_clean),
+                     .(
+                       product_type = first(product_type),
+                       product = first(product),                       
+                       avg_profit_margin = mean(profit_margin, na.rm = TRUE),
+                       n_rows_in_map = .N                               
+                     ),
+                     by = .(product_key_clean, period)
+]
+
+
+
+fp_receipts[, product_key_clean := make_key7(product_name)]
+fp_map_agg[, product_key_clean := make_key7(product)]
+
+
+setkey(fp_receipts, product_key_clean, period)
+setkey(fp_map_agg, product_key_clean, period)
+
+
+
+left_data <- fp_map_agg[
+  fp_receipts,
+  on = .(product_key_clean, period)
+]
+
+
+left_data[
+  ,
+  .(
+    total_sales = .N,
+    with_margin = sum(!is.na(avg_profit_margin)),
+    coverage_pct = round(100 * mean(!is.na(avg_profit_margin)), 2)
+  )
+]
+ 
+
+
+```
+
+-   Bu layihədə **fp_receipts** və **fp_map** cədvəllərini birləşdirmək üçün əsas problem məhsul adlarının fərqli yazılış formaları idi (əlifba fərqləri, ölçü vahidləri, durğu işarələri, əlavə sözlər və s.). Bu səbəblə join-dan əvvəl məhsul adları standart formaya salındı və bunun ücun make_key7() funksiyası quruldu. fp_map cədvəlində eyni məhsul və eyni period üçün bir neçə sətir ola bildiyi üçün join-dan əvvəl fp_map_agg yaradıldı:Bu addımın məqsədi join zamanı 1 satış sətrinə bir neçə map sətrinin düşməsi riskini azaltmaq və margin-i daha stabil formada istifadə etməkdir.Bunu etmədikdə join şişirdi. Uygunlasma faizi 7.2 % olmusdur
+
+# 1.Anomaliyalar
+
+## 1.1.NA Analizi
+
+```{r NA,include=TRUE,echo=TRUE,error=FALSE,warning=FALSE,message=FALSE}
+
+na_summary_map =data.frame(na_count=colSums(is.na(fp_map)))
+na_summary_receipts = data.frame(na_count=colSums(is.na(fp_receipts)))
+
+
+# Receipts
+
+datatable(na_summary_receipts)
+
+
+
+
+
+
+# MAP
+
+datatable(na_summary_map)
+
+
+
+# Left_Data
+
+na_summary_leftdata = data.frame(na_count=colSums(is.na(left_data))) 
+
+
+
+
+datatable(na_summary_leftdata)
+
+
+
+
+ 
+
+```
+
+-   fp_receipts sadəcə product_name sütununda 14506 boş sətr var idi.Bunlar **bilinməyən məhsul** olaraq dəyişdirilmişdir.fp_map cədvəlində heç bir NA,boş sətr və s, tapılmamışdır.Left join nəticəsində avg_profit_margin sütunu üzrə yalnız 720,370 sətirdə dəyər mövcud olmuşdur (coverage 7.2%), qalan sətirlərdə marja məlumatı xəritədə tapılmadığı üçün NA qalmışdır.
+
+## 1.2.Anomaliya
+
+```{r data quality,include=TRUE,echo=TRUE,error=FALSE,warning=FALSE,message=FALSE}
+
+
+
+
+price_outliers <- fp_receipts %>%
+  group_by(product_key_clean) %>%
+  filter(n_distinct(unit_price) > 2) %>%
+  mutate(
+    q1 = quantile(unit_price, 0.25, na.rm = TRUE),
+    q3 = quantile(unit_price, 0.75, na.rm = TRUE),
+    iqr = q3 - q1
+  ) %>%
+  filter(
+    iqr > 0 &
+    (unit_price < q1 - 1.5 * iqr |
+     unit_price > q3 + 1.5 * iqr)
+  ) %>%
+  ungroup()
+
+
+
+
+
+
+neg_qty <- fp_receipts %>% filter(qnt <= 0)
+
+neg_table_qnt <- data.frame(
+  issue_type = "invalid_quantity",
+  column = "quantity",
+  count = nrow(neg_qty),
+  percent = round(nrow(neg_qty) / nrow(fp_receipts) * 100, 2)
+)
+
+
+neg_unit_price= fp_receipts %>% filter(unit_price <= 0)
+neg_total_price= fp_receipts %>% filter(total_price <= 0)
+
+neg_table_unit =  data.frame(
+  issue_type = "invalid_price",
+  column = "unit_price",
+  count = nrow(neg_unit_price),
+  percent = round(nrow(neg_unit_price) / nrow(fp_receipts) * 100, 2)
+)
+
+neg_table_total =  data.frame(
+  issue_type = "invalid_price",
+  column = "total_price",
+  count = nrow(neg_total_price),
+  percent = round(nrow(neg_total_price) / nrow(fp_receipts) * 100, 2)
+)
+
+outlier_table <- data.frame(
+  issue_type = "price_outliers_iqr",
+  column = "unit_price",
+  count = nrow(price_outliers),
+  percent = round(nrow(price_outliers) / nrow(fp_receipts) * 100, 2)
+)
+
+
+duplicate_table <- data.frame(
+  issue_type = "duplicate_transactions",
+  column = "rec_id",
+  count = sum(duplicated(fp_receipts$rec_id)),
+  percent = round(sum(duplicated(fp_receipts$rec_id)) / nrow(fp_receipts) * 100, 2)
+)
+
+
+
+
+neg_profit_map= fp_map %>% filter(profit_margin <= 0)
+
+anomaly_map_neg= data.frame(
+  issue_type = "negativ_profit",
+  column = "profit_margin",
+  count = nrow(neg_profit_map),
+  percent = round(nrow(neg_profit_map) / nrow(fp_map) * 100, 2)
+)
+
+invalid_profit_map = fp_map %>%  filter(profit_margin >= 1)
+
+anomaly_map_invalid = data.frame(
+  issue_type = "invalid_profit",
+  column = "profit_margin",
+  count = nrow(invalid_profit_map),
+  percent = round(nrow(invalid_profit_map) / nrow(fp_map) * 100, 2)
+)
+
+
+
+anomaly_summary = rbind(neg_table_qnt,neg_table_unit,neg_table_total,outlier_table,duplicate_table,anomaly_map_neg,anomaly_map_invalid)
+
+
+
+datatable(anomaly_summary)
+
+
+
+
+```
+
+-   Anomaly_summary cədvəli yaradılmışdır və bu cədvəldə anomaliyalar olub olmadığı bildirilmişdir. Unit_price sütununda  291981 ədəd;2.92 % kənar çıxma(outlier) tapılmışdır Profit_margin sütununda 5082 ədəd;4.30 % mənfi margin və 1226 ədəd;1.04 % 1dən böyük margin tapılmışdır.
+
+# 2.Deskriptiv təhlil
+
+## 2.1.Data ümumi təsvir
+
+```{r data,include=TRUE,echo=TRUE,error=FALSE,warning=FALSE,message=FALSE}
+
+dim(fp_receipts)
+
+
+str(fp_receipts)
+
+
+summary(fp_receipts$unit_price)  
+
+
+summary(fp_receipts$qnt)
+
+
+summary(fp_receipts$total_price)
+
+
+
+dim(fp_map)
+
+
+str(fp_map)
+
+  
+
+summary(fp_map$profit_margin)
+
+
+```
+
+## 2.2.Analizlər
+
+Ümumi gəlir,əməliyyat
+
+```{r analiz1, include=TRUE,echo=TRUE,error=FALSE,warning=FALSE,message=FALSE }
+
+total_revenue =  fp_receipts %>% 
+  summarise(total=sum(total_price))  #144 milyon 327 min 632
+
+datatable(total_revenue)
+
+total_transactions =  nrow(fp_receipts) #10000909L
+
+total_transactions
+
+
+
+
+product_qnt=fp_receipts %>%
+  group_by(product_key_clean) %>%
+  summarise(total_qnt = sum(qnt, na.rm = TRUE))
+
+datatable(product_qnt)
+
+
+```
+
+-   10000909 sayda əməliyyatımız var.144327632 manat gəlir ədə edilmişdi. Her productın sayı ayrıca tapılmışdır.Ümumi saylar toplanmamışdır çünki qnt sütununda çəki dəyərləri və say dəyərləri ikisidə qarışıq olaraq var. Bunlar **sum(qnt)** eliyib toplamaq mənasızdır
+
+Pos statistikası
+
+```{r a2,include=TRUE,echo=TRUE,error=FALSE,warning=FALSE,message=FALSE}
+
+pos_statistic <- fp_receipts_norm %>%
+  group_by(pos_final) %>%
+  summarise(
+    total_revenue = sum(total_price, na.rm = TRUE),
+    sales_count   = n(),
+    avg_ticket    = total_revenue / sales_count,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_revenue)) %>%
+  mutate(
+    revenue_share = total_revenue / sum(total_revenue),
+    cumulative_share = cumsum(revenue_share)
+  )
+
+
+top10_pos=head(pos_statistic,10)
+
+datatable(top10_pos)
+
+
+pos_graph=ggplot(top10_pos,
+       aes(x = reorder(pos_final, total_revenue),
+           y = total_revenue)) +
+  geom_col(width = 0.65, fill = "#1F3A5F") +
+  coord_flip() +
+  geom_text(aes(label = comma(round(total_revenue,0))),
+            hjust = -0.1,
+            size = 3.8) +
+  labs(
+    title = "Top 10 POS by Total Revenue",
+    subtitle = "Ranked by revenue contribution",
+    x = NULL,
+    y = "Total Revenue"
+  ) +
+  scale_y_continuous(labels = comma,
+                     expand = expansion(mult = c(0, 0.12))) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15),
+    plot.subtitle = element_text(color = "grey40"),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+
+ggplotly(pos_graph)
+
+
+
+
+
+```
+
+
+Regionlar
+
+```{r pos_bolge,include=TRUE,echo=TRUE,error=FALSE,warning=FALSE,message=FALSE}
+
+
+
+pos_tbl <- fp_receipts %>%
+  distinct(pos) %>%
+  mutate(
+    pos_clean = pos %>%
+      stri_enc_toutf8() %>%                            
+      stri_trans_general("Any-Latin; Latin-ASCII") %>% 
+      toupper() %>%
+      str_replace_all("[^A-Z0-9 ]+", " ") %>%          
+      str_squish()
+  )
+
+
+
+
+all_regions <- c(
+  
+  # Bakı və Bakı rayonları
+  "BAKI","BAKU",
+  "YASAMAL","NERIMANOV","NESIMI","NIZAMI","SABUNCU","SURAXANI",
+  "XETAI","BINEQEDI","QARADAG","SEBAIL",
+  "GUNESLI","28 MAY","AHMEDLI","HEZI ASLANOV",
+  "INSHAATCHILAR","ELMLER","GENCLIK","AZADLIQ",
+  "KOROGLU","BAKIXANOV","RAMANA","MASAZIR",
+  "BILAJARI","BINE","BINE ATCILIQ","TURKAN",
+  "MERDEKAN","SHUVALAN","ZABRAT","PIRSHAGI",
+  "NOVXANI","HOVSAN","KURDEKHANI",
+  
+  # Sumqayıt və Abşeron
+  "SUMQAYIT","SUMGAYIT",
+  "XIRDALAN","ABSHERON",
+  
+  # Böyük şəhərlər
+  "GENCE","MINGECEVIR","SEKI","SIRVAN","NAFTALAN","YEVLAX","XANKENDI",
+  
+  # Naxçıvan MR
+  "NAXCIVAN","BABEK","CULFA","KENGERLI","ORDUBAD",
+  "SEDEREK","SAHBUZ","SERUR",
+  
+  # Şimal
+  "QUBA","QUSAR","XACMAZ","SABRAN","SIYEZEN","XIZI",
+  
+  # Qərb
+  "QAZAX","AGSTAFA","TOVUZ","SEMKIR","GOYGOL","GEDEBEY",
+  "DASKESEN","GORANBOY","SAMUX",
+  
+  # Şimal-Qərb
+  "BALAKEN","ZAQATALA","QAX","OGUZ",
+  
+  # Mərkəzi Aran
+  "SAMAXI","ISMAYILLI","AGSU","QOBUSTAN",
+  "GOYCAY","AGDAS","UCAR","KURDEMIR","HACIQABUL",
+  "SABIRABAD","SAATLI","IMISLI","BERDE",
+  "TERTER","AGCABEDI","ZERDAB","BEYLEQAN",
+  "NEFTCALA","SALYAN",
+  
+  # Cənub
+  "LENKERAN","ASTARA","MASALLI","LERIK",
+  "YARDIMLI","CELILABAD","BILESUVAR",
+  
+  # Qarabağ və ətraf
+  "AGDAM","FUZULI","CEBRAYIL","ZENGILAN",
+  "QUBADLI","LACIN","KELBECER"
+)
+
+
+
+
+
+
+
+pattern2 <- paste0("\\b(", paste(all_regions, collapse="|"), ")\\b")
+
+
+
+
+region_matches_all <- pos_tbl %>%
+  filter(str_detect(pos_clean, pattern2)) %>%
+  mutate(region = str_extract(pos_clean, pattern2))
+
+region_pos_count=region_matches_all %>%
+  count(region, sort = TRUE)
+
+
+datatable(region_pos_count)
+
+
+
+
+region_plot <- region_pos_count %>%
+  arrange(desc(n)) %>%
+  slice_head(n = 20) %>%
+  mutate(region = reorder(region, n))
+
+q1=ggplot(region_plot, aes(x = n, y = region)) +
+  geom_col(fill="#1F3A5F") +
+  geom_text(aes(label=n),
+            nudge_x=3,
+            color="black",
+            size = 4)+
+  labs(
+    title = "Top 10 Regions by Number of Observations",
+    x = "Number of Observations",
+    y = "Region"
+  ) +
+  theme_minimal()+
+   expand_limits(x = max(region_plot$n) * 1.2)
+
+
+ggplotly(q1)
+
+
+```
+
+
+- Region məlumatı ayrıca sütun kimi mövcud olmadığından, POS adlarında keçən coğrafi açar sözlər əsasında təxmini region təsnifatı aparılmışdır. 
+
+
+Tarix üzrə gəlir
+
+```{r a3,include=TRUE,echo=TRUE,error=FALSE,warning=FALSE,message=FALSE}
+ 
+date_sales = fp_receipts[
+  ,
+  .(revenue = sum(total_price, na.rm = TRUE)),
+  by = rec_date
+][order(rec_date)]
+
+
+date_transaction = fp_receipts[
+  ,
+  .(transaction_count = .N),
+  by = rec_date
+][order(rec_date)]
+
+
+
+
+p1 <- ggplot(date_sales, aes(x = rec_date, y = revenue)) +
+  geom_line(linewidth = 0.9) +
+  labs(
+    title = "Daily Revenue Trend",
+    x = "Date",
+    y = "Revenue"
+  ) +
+  scale_x_date(
+    breaks = date_sales$rec_date,   
+    date_labels = "%Y-%m-%d"
+  )+
+  scale_y_continuous(labels = comma) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 90, hjust = 0.5)
+  )
+
+ggplotly(p1, tooltip = c("x", "y"))
+
+
+
+
+
+p2 <- ggplot(date_transaction, aes(x = rec_date, y = transaction_count)) +
+  geom_line(linewidth = 0.9) +
+  labs(
+    title = "Daily Transaction Count",
+    x = "Date",
+    y = "Number of Transactions"
+  ) +
+  scale_x_date(
+    breaks = date_sales$rec_date,   
+    date_labels = "%Y-%m-%d"
+  )+
+  scale_y_continuous(labels = comma) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 90, hjust = 0.5)
+  )
+
+ggplotly(p2, tooltip = c("x", "y"))
+
+
+
+
+
+```
+
+Aylar üzrə posların gəlir müqayisəsi
+
+```{r a4,include=TRUE,echo=TRUE,error=FALSE,warning=FALSE,message=FALSE}
+
+
+monthly_revenue2 <- fp_receipts_norm %>%
+  mutate(
+    rec_date = as.Date(rec_date),
+    ym = format(rec_date, "%Y-%m")
+  ) %>%
+  group_by(pos_final, ym) %>%
+  summarise(
+    revenue = sum(total_price, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(pos_final, ym) %>%
+  group_by(pos_final) %>%
+  mutate(
+    growth = if_else(
+      is.na(lag(revenue)) | lag(revenue) == 0,
+      0,
+      round(revenue / lag(revenue) - 1, 2)
+    )
+  ) %>%
+  ungroup()
+
+
+
+
+datatable(monthly_revenue2)
+
+
+
+
+
+```
+
+- Burada posların ay üzrə dəyişimi verilmişdir.
+
+Məhsul statistikası
+
+```{r a5,include=TRUE,echo=TRUE,error=FALSE,warning=FALSE,message=FALSE}
+
+
+product_stats <- fp_receipts[
+  ,
+  .(
+    total_sales = sum(total_price, na.rm = TRUE),
+    total_qnt = sum(qnt, na.rm = TRUE),
+    tx_count = .N
+  ),
+  by = product_key_clean
+][order(-tx_count)]
+
+
+product_stats[, avg_unit_price := round(total_sales / total_qnt,2)]
+product_stats[, avg_units_per_tx :=round(total_qnt / tx_count,2)]
+
+
+
+price_q1 <- quantile(product_stats$avg_unit_price, 0.25)
+price_q3 <- quantile(product_stats$avg_unit_price, 0.75)
+
+qnt_q1 <- quantile(product_stats$total_qnt, 0.25)
+qnt_q3 <- quantile(product_stats$total_qnt, 0.75)
+
+tx_q1 <- quantile(product_stats$tx_count, 0.25, na.rm = TRUE)
+tx_q3 <- quantile(product_stats$tx_count, 0.75, na.rm = TRUE)
+
+
+
+
+product_stats[, volume_segment :=fcase(
+                
+                  avg_unit_price <= price_q1 & total_qnt >= qnt_q3, "Cheap-High Volume", #əsas gəlir generatorları
+              
+                  avg_unit_price >= price_q3 & total_qnt >= qnt_q3, "Expensive-High Volume", # premium bestseller
+                    
+                  avg_unit_price >= price_q3 & total_qnt <= qnt_q1, "Expensive-Low Volume", # potensial zəif məhsullar
+                    
+                  avg_unit_price <= price_q1 & total_qnt <= qnt_q1, "Cheap-Low Volume", # riskli məhsullar
+                  default="Mid Segment" # orta bazar
+                  
+                
+                )
+]
+
+
+product_stats[, frequency_segment := fcase(
+  avg_unit_price <= price_q1 & tx_count >= tx_q3, "Cheap-Frequent",  # tez-tez seçilən əsas məhsullar
+  avg_unit_price >= price_q3 & tx_count >= tx_q3, "Expensive-Frequent",  # Premium və stabil tələbli məhsullar
+  avg_unit_price >= price_q3 & tx_count <= tx_q1, "Expensive-Rare",  # bahali və riskli premium məhsullar
+  avg_unit_price <= price_q1 & tx_count <= tx_q1, "Cheap-Rare", # Aşağı tələbli ucuz məhsullar
+  default = "Mid Segment" # orta bazar
+)]
+
+
+
+
+
+product_stats_10=head(product_stats,10)
+
+datatable(product_stats)
+
+
+product_graph=ggplot(product_stats_10,
+       aes(x = reorder(product_key_clean, total_sales),
+           y = total_sales)) +
+  geom_col(width = 0.65, fill = "#2C3E50") +
+  coord_flip() +
+  labs(
+    title = "Top 10 Products by Total Sales",
+    subtitle = "Ranked by total transaction count",
+    x = NULL,
+    y = "Total Sales"
+  ) +
+  scale_y_continuous(labels = comma,
+                     expand = expansion(mult = c(0, 0.1))) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15),
+    plot.subtitle = element_text(color = "grey40"),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+ggplotly(product_graph)
+
+```
+
+## 2.3.Left join data analizi
+
+Məhsul tiplərinə görə gəlir və əməliyyat
+
+```{r a6,include=TRUE,echo=TRUE,error=FALSE,warning=FALSE,message=FALSE}
+
+type_sales <- left_data[
+  ,
+  .(revenue = sum(total_price, na.rm = TRUE),
+    transactions = .N),
+  by = product_type
+]
+
+
+type_sales_plot=ggplot(type_sales,
+       aes(x = reorder(product_type, revenue),
+           y = revenue)) +
+  geom_col(width = 0.65, fill = "#2C3E50", na.rm = TRUE) +
+  coord_flip() +
+  geom_text(aes(label = scales::comma(round(revenue, 0))),
+            hjust = -0.1,
+            size = 4) +
+  labs(
+    title = "Revenue by Product Type",
+    x = NULL,
+    y = "Total Revenue"
+  ) +
+  scale_y_continuous(
+    labels = scales::comma,
+    expand = expansion(mult = c(0, 0.12))
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+ggplotly(type_sales_plot)
+
+
+```
+
+“Marja məlumatı mövcud olan satışların seçilməsi”
+
+```{r a7,include=TRUE,echo=TRUE,error=FALSE,warning=FALSE,message=FALSE}
+
+
+margin_subset <- left_data[!is.na(avg_profit_margin)]
+
+
+
+margin_subset[, cor(qnt,avg_profit_margin)]  #0.0282019
+
+
+
+
+
+```
+
+-   Korelasiya çox zəifdir.
+
+Məhsul tipi üzrə gəlir və mənfəət
+
+```{r a8,include=TRUE,echo=TRUE,error=FALSE,warning=FALSE,message=FALSE}
+
+
+profit_by_type <- margin_subset[
+  ,
+  .(
+    revenue = sum(total_price),
+    profit = sum(total_price * avg_profit_margin)
+  ),
+  by = product_type
+]
+
+profit_by_type[, profit_rate := round(profit/revenue,2)]
+
+
+
+pt=ggplot(profit_by_type, aes(x = reorder(product_type, profit), 
+                           y = profit)) +
+  geom_point(size = 3, alpha = 0.8) +
+  coord_flip() +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "Profit by Product Type",
+    x = "Product Type",
+    y = "Total Profit"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.text.y = element_text(size = 10)
+  )
+
+
+ggplotly(pt)
+
+
+
+```
+
+Period və tip üzrə gəlir
+
+```{r a9,include=TRUE,echo=TRUE,error=FALSE,warning=FALSE,message=FALSE}
+
+period_and_type = left_data %>% 
+  group_by(period,product_type) %>% 
+  summarise(revenue=sum(total_price, na.rm = TRUE))
+
+
+datatable(period_and_type)
+
+
+
+
+```
+
+Məhsullar üzrə Mənfəət Konsentrasiyası (Pareto Analizi)
+
+```{r a11, include=TRUE,echo=TRUE,error=FALSE,warning=FALSE,message=FALSE }
+
+
+
+
+product_profit <- margin_subset[
+  ,
+  .(
+    revenue = sum(total_price),
+    profit = sum(total_price * avg_profit_margin)
+  ),
+  by = .(product_key_clean,product_type)
+][order(-profit)]
+
+product_profit[, cumulative_profit_share :=
+                 cumsum(profit) / sum(profit)]
+
+
+
+# Profitin 80%-ni neçə məhsul getirir?
+product_profit[cumulative_profit_share <= 0.8, .N]
+
+
+product_profit[1:50, .N, by = product_type] 
+
+
+#deməli top 50 profit məhsulunun hamısı FOOD-dur.
+
+
+top10_share=product_profit[1:10, max(cumulative_profit_share)]
+
+top50_share=product_profit[1:50, max(cumulative_profit_share)]
+
+
+sprintf("Top 10 share: %.1f%% | Top 50 share: %.1f%%",
+        100*top10_share, 100*top50_share)
+
+```
+
+-   Məhsul mənfəət analizi göstərdi ki, mənfəət müəyyən məhsullar üzərində konsentrasiyalaşıb. Top 10 məhsul ümumi mənfəətin 27.8 %-ni, top 50 məhsul isə 45.8%-ni formalaşdırır. Ümumi mənfəətin 80%-ni əldə etmək üçün cəmi   `r product_profit[cumulative_profit_share <= 0.8, .N]` məhsul kifayət edir. Ən gəlirli məhsullar əsasən FOOD kateqoriyasında cəmlənmişdir.
+
+# 3.Proqnoz və Fərziyyələr
+
+Pos proqnoz
+
+```{r p1,include=TRUE,echo=TRUE,error=FALSE,warning=FALSE,message=FALSE}
+
+
+pos_model_data <- fp_receipts_norm[, .(
+  revenue = sum(total_price, na.rm=TRUE),
+  transactions = .N,
+  avg_ticket = mean(total_price, na.rm=TRUE),
+  qnt_sum = sum(qnt, na.rm=TRUE)
+), by = .(pos_final,period)]
+
+
+fit_frontier <- lm(log1p(revenue) ~ log1p(transactions) + factor(period), data = pos_model_data)
+
+summary(fit_frontier)
+
+pos_model_data[, pred_log := predict(fit_frontier, .SD)]
+pos_model_data[, residual := log1p(revenue) - pred_log]   # + => overperform, - => underperform
+
+
+
+pos_model_data[, expected_rev := expm1(pred_log)]
+pos_model_data[, gap := pmax(expected_rev - revenue, 0)]
+
+
+
+# konservativ uplift: gap-in 30%-ni əldə edə bilsək
+uplift_30 <- pos_model_data[, sum(gap) * 0.30]
+uplift_30
+
+
+
+
+total_rev <- pos_model_data[, sum(revenue)]
+uplift_share <- uplift_30 / total_rev * 100
+
+total_rev
+uplift_share
+
+
+
+
+
+
+
+under_pos <- pos_model_data[gap > 0]
+
+# ən böyük gap-lər
+top_under <- under_pos[order(-gap)][1:20]
+
+datatable(top_under)
+
+
+
+
+
+
+pos_model_data[, status := ifelse(gap > 0, "Underperform", "Normal")]
+
+pos_model_data[, .(
+  avg_ticket_mean = mean(avg_ticket),
+  transactions_mean = mean(transactions)
+), by = status]
+
+
+
+```
+
+-   Bu bölmədə POS-ların gəlir performansı tranzaksiya səviyyəsi və dövr (period) faktorları nəzərə alınmaqla qiymətləndirilmişdir. Məqsəd eyni həcm və eyni zaman kəsiyində fəaliyyət göstərən POS-lar arasında struktur fərqlərini müəyyən etmək və potensial gəlir artımını qiymətləndirməkdir.
+
+Model bu formada qurulmuşdur:**log(Revenue)=a+b log(Transactions)+Period**
+
+Analiz “pos_final” adlı standartlaşdırılmış POS dəyişəni üzərində aparılmışdır. Eyni brendə aid müxtəlif yazılış formaları vahid ad altında birləşdirilmişdir (məsələn, “Bravo Mall”, “Bravo 28” və s. → “BRAVO”). Bu yanaşma aqreqasiya səhvlərinin qarşısını almış və model nəticələrinin real biznes strukturunu əks etdirməsini təmin etmişdir.
+
+Model nəticələri **log1p(transactions) əmsalı = 0.708 (p \< 0.001)** **R² = 0.498** Period effekti (202405) statistik olaraq əhəmiyyətli deyil **(p = 0.107)** Bu nəticələr göstərir ki: Tranzaksiya sayı ilə gəlir arasında güclü və statistik əhəmiyyətli müsbət əlaqə mövcuddur. Tranzaksiya sayı 1% artdıqda, gəlir orta hesabla təxminən **0.71%** artır. Gəlirin təxminən 50%-i tranzaksiya və dövr faktorları ilə izah olunur. İki ay arasında struktur baxımından ciddi fərq müşahidə edilməmişdir. Əmsalın 1-dən kiçik olması**(0.71 \< 1)** göstərir ki, gəlir artımı tranzaksiya artımına tam proporsional deyil. Bu isə daha böyük həcmli POS-larda orta çekin nisbətən aşağı olması və ya struktur fərqlərin mövcudluğu ilə izah oluna bilər.
+
+Performans boşluğu və optimizasiya potensialı Model əsasında hər POS və hər ay üçün gözlənilən gəlir səviyyəsi hesablanmışdır. Real və proqnozlaşdırılan gəlir arasındakı fərq performans göstəricisi kimi qiymətləndirilmişdir. Underperform edən POS-lar üzrə performans boşluğu hesablanmış və konservativ ssenari tətbiq edilmişdir. Əgər mövcud performans boşluğunun yalnız 30%-i bağlanarsa:**2,664,475 AZN** əlavə gəlir əldə etmək mümkündür. Bu məbləğ ümumi gəlirin təxminən 1.85%-nə bərabərdir. Vacib məqam ondan ibarətdir ki, bu artım: Əlavə tranzaksiya artımı olmadan, Mövcud bazar şəraiti dəyişmədən, Yalnız struktur və əməliyyat optimizasiyası hesabına mümkündür. Strateji nəticə Analiz göstərir ki, gəlir artımı yalnız tranzaksiya sayının artırılması ilə məhdudlaşmır. Eyni trafik səviyyəsində bəzi POS-lar struktur baxımından daha effektiv fəaliyyət göstərir. Bu isə gəlir artımı üçün iki əsas istiqamət olduğunu göstərir: Aşağı performanslı POS-larda struktur və əməliyyat optimizasiyası, Eyni tranzaksiya səviyyəsində daha yüksək gəlir yaradan POS-ların təcrübəsinin digər vahidlərə tətbiqi.
+
+Period proqnoz
+
+```{r p2,include=TRUE,echo=TRUE,error=FALSE,warning=FALSE,message=FALSE}
+
+
+month_summary <- fp_receipts_norm[, .(
+  revenue = sum(total_price, na.rm=TRUE),
+  qnt = sum(qnt, na.rm=TRUE),
+  price = weighted.mean(unit_price, w=qnt, na.rm=TRUE)
+), by = period]
+
+datatable(month_summary)
+
+
+m0 <- month_summary[period=="202404"]
+m1 <- month_summary[period=="202405"]
+
+volume_effect <- (m1$qnt - m0$qnt) * m0$price
+price_effect  <- (m1$price - m0$price) * m0$qnt
+
+total_change  <- m1$revenue - m0$revenue
+
+volume_effect # -4892965 (hecm effekti)
+price_effect # 3086221   (qiymet effekti)
+total_change # -2013122  (umumi qiymet deyiskenliyi)
+
+
+
+volume_share <- volume_effect / abs(total_change) *100
+price_share  <- price_effect / abs(total_change)  *100
+
+volume_share # -243.0536
+price_share  #  153.3053
+
+
+
+
+
+```
+
+- Bu bölmədə 202404 və 202405 ayları arasında gəlir dəyişimi struktur baxımından təhlil edilmişdir. Məqsəd ümumi gəlir dəyişməsinin hansı faktorlar hesabına baş verdiyini müəyyən etməkdir.
+
+Ümumi gəlir dəyişimi: -2,013,122 AZN Həcm effekti: -4,892,965 AZN Qiymət effekti: +3,086,221 AZN
+
+Gəlir azalmasının -243%-i həcm azalmasından qaynaqlanıb,qiymət artımı isə bu azalmanın 153%-ni kompensasiya edib.Əgər qiymət artımı olmasaydı, gəlir azalması -4.89M AZN olacaqdı,qiymət artımı sayəsində düşüş -2.01M AZN-də dayanıb. Bu analiz göstərir ki, 202405 ayında əsas problem qiymət deyil, tələb və satış həcmi olmuşdur. Buna görə gəlir artımı strategiyasında əsas fokus həcm artımı və satış aktivliyinin gücləndirilməsi üzərində qurulmalıdır.
+
+# 4.Xülasə
+
+Bu layihədə 10 milyondan artıq əməliyyat məlumatı əsasında satış dinamikası, struktur xüsusiyyətlər və gəlir formalaşmasına təsir edən əsas faktorlar təhlil edilmişdir. Analizlər dörd əsas istiqamətdə aparılmışdır: deskriptiv təhlil, anomaliya aşkarlanması, struktur əsaslı proqnoz və strateji qiymətləndirmə.
+
+## 4.1 Texniki Yanaşma və Məlumat Keyfiyyəti
+
+POS Standartlaşdırılması
+
+Eyni brendə aid müxtəlif yazılış formaları vahid struktur altında birləşdirilmişdir (məsələn, “Bravo Mall”, “Bravo 28” və s. → “BRAVO”). Bu addım aqreqasiya səhvlərinin qarşısını almış və model nəticələrinin real biznes strukturunu əks etdirməsini təmin etmişdir.
+
+Məhsul Adlarının Təmizlənməsi (match_key7)
+
+Satış məlumatlarında (fp_receipts) və məhsul xəritəsində (fp_map) məhsul adlarının yazılış formaları fərqli olduğuna görə birbaşa uyğunlaşdırma mümkün olmamışdır. Bu problemi aradan qaldırmaq üçün məhsul adları üzərində standartlaşdırma funksiyası tətbiq edilmişdir.
+
+make_key7 (match_key7) funksiyası vasitəsilə:
+
+Mətnlər UTF-8 formatına gətirilmişdir,
+
+Böyük/kiçik hərf fərqləri aradan qaldırılmışdır,
+
+Xüsusi simvollar və boşluqlar təmizlənmişdir,
+
+Məhsul açarı vahid formata salınmışdır. Bu mərhələ məhsul uyğunlaşmasının keyfiyyətini artırmaq məqsədi daşıyırdı.
+
+Left Join və Coverage
+
+fp_map cədvəli məhsul və period səviyyəsində təkrarlanan sətrlərdən ibarət olduğu üçün əvvəlcə aqreqasiya edilmiş və fp_map_agg adlı yeni struktur yaradılmışdır. Bu mərhələdə:
+
+Eyni məhsul və period üzrə məlumatlar birləşdirilmişdir,Orta profit margin hesablanmışdır, Məhsul açarları standartlaşdırılmışdır.Bu addım məlumatın daha stabil və modelə uyğun strukturda istifadəsinə imkan vermişdir.
+
+Ümumi satışların təxminən 7.2%-i üzrə uyğunlaşma əldə edilmişdir (match rate).Qalan hissə üzrə marja məlumatı mövcud olmamışdır. Bu aşağı match faizi iki əsas məqamı göstərir: Məhsul adlarının struktur fərqləri və uyğunlaşma problemləri mövcuddur. Marja əsaslı analizlər bütün satış məlumatına deyil, yalnız uyğunlaşan hissəyə şamil edilmişdir.
+
+## 4.2 Deskriptiv Təhlilin Nəticələri
+
+Deskriptiv analiz göstərmişdir ki:
+
+Satışlar POS-lar arasında qeyri-bərabər paylanmışdır.
+
+Gəlirin əsas hissəsi məhdud sayda POS tərəfindən formalaşır.
+
+Tranzaksiya sayı və orta çek göstəriciləri POS-lar üzrə ciddi fərqlər göstərir.
+
+Bu nəticə satış strukturunun konsentrasiyaya meylli olduğunu və performans fərqlərinin mövcudluğunu göstərir.
+
+## 4.3 Anomaliyaların Aşkarlanması
+
+Qiymət və məhsul səviyyəsində fərqlər analiz edilmişdir. Müəyyən məhsullarda qiymət diapazonunun geniş olması müşahidə edilmişdir.
+
+Bu isə: Qiymət siyasətində uyğunsuzluq,Fərqli satış kanalları,və ya məlumat keyfiyyəti problemi kimi faktorlarla izah oluna bilər. Anomaliya təhlili məlumatın struktur keyfiyyətinin qiymətləndirilməsi baxımından vacib mərhələ olmuşdur.
+
+## 4.4 Proqnoz və Performans Analizi
+
+POS :
+
+Model nəticələri göstərmişdir ki:
+
+Tranzaksiya sayı ilə gəlir arasında güclü və statistik əhəmiyyətli əlaqə mövcuddur.
+
+Elasticitet 0.708 olmuşdur.
+
+Gəlirin təxminən 50%-i tranzaksiya və dövr faktorları ilə izah olunur.
+
+Performans boşluğunun 30%-nin bağlanması halında:2,664,475 AZN əlavə gəlir
+
+Bu isə ümumi gəlirin təxminən 1.85%-i deməkdir.
+
+Bu nəticə struktur optimizasiya potensialının mövcud olduğunu göstərir.
+
+Period:
+
+202404 və 202405 ayları arasında:
+
+Ümumi gəlir dəyişimi: -2,013,122 AZN
+
+Həcm effekti: -4,892,965 AZN
+
+Qiymət effekti: +3,086,221 AZN
+
+Bu isə göstərir ki:Gəlir azalmasının əsas səbəbi satış həcminin azalması olmuşdur. Qiymət artımı isə bu azalmanı qismən kompensasiya etmişdir.
+
+Həcm azalması ümumi dəyişmənin 243%-ni
+
+Qiymət artımı isə 153%-ni kompensasiya etmişdir.
+
+Bu nəticə gəlir dinamikasında əsas sürücünün tələb və həcm olduğunu göstərir.
+
+## 4.5 Ümumi Qiymətləndirmə
+
+Layihə nəticələri göstərir ki:
+
+Gəlir artımı yalnız qiymət strategiyası ilə təmin edilə bilməz.
+
+Əsas fokus satış həcminin artırılması üzərində qurulmalıdır.
+
+Struktur baxımından zəif performans göstərən POS-larda optimizasiya potensialı mövcuddur.
+
+Mövcud məlumat iki aylıq olduğu üçün uzunmüddətli proqnoz modelləri qurulmamışdır, lakin struktur istiqamət aydın müəyyən edilmişdir.
